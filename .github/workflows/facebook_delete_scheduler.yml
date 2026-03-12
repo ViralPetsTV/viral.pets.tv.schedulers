@@ -1,4 +1,4 @@
-name: INSTAGRAM DELETE SCHEDULER
+name: FACEBOOK DELETE SCHEDULER
 
 on:
   workflow_dispatch:
@@ -17,7 +17,7 @@ jobs:
           repository: ViralPetsTV/viral.pets.tv
           token: ${{ secrets.PRIVATE_REPO_TOKEN }}
           sparse-checkout: |
-            INSTAGRAM/
+            FACEBOOK/
             requirements.txt
           fetch-depth: 1
           
@@ -39,4 +39,4 @@ jobs:
 
       # Run your Python script
       - name: Run Python script
-        run: python3 INSTAGRAM/instagram_delete.py
+        run: python3 FACEBOOK/facebook_delete.py
