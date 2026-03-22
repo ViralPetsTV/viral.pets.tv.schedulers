@@ -15,7 +15,7 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
         with:
-          repository: Paragoun/viral.pets.tv
+          repository: ViralPetsTV/viral.pets.tv
           token: ${{ secrets.PRIVATE_REPO_TOKEN }}
           sparse-checkout: |
             INSTAGRAM/
