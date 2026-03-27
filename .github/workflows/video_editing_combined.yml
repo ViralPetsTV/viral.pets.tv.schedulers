@@ -100,10 +100,6 @@ jobs:
               KAGGLE_USERNAME="${{ secrets.KAGGLE_USERNAME_2 }}"
               KAGGLE_KEY="${{ secrets.KAGGLE_KEY_2 }}"
               ;;
-            3)
-              KAGGLE_USERNAME="${{ secrets.KAGGLE_USERNAME_3 }}"
-              KAGGLE_KEY="${{ secrets.KAGGLE_KEY_3 }}"
-              ;;
             *)
               echo "❌ Invalid account number: $ACCOUNT_NUM"
               exit 1
