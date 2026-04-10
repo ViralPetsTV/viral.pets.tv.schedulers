@@ -2,15 +2,21 @@ name: VIDEO EDITING PART 1 - TRIGGER KAGGLE
 
 on:
   workflow_dispatch:
-  schedule:
-    - cron: '30 18 * * *'   # 12:00 AM IST (6:30 PM UTC previous day)
-    - cron: '30 6 * * *'    # 12:00 PM IST (6:30 AM UTC)
+  # schedule:
+  #   - cron: '30 18 * * *'   # 12:00 AM IST (6:30 PM UTC previous day)
+  #   - cron: '30 6 * * *'    # 12:00 PM IST (6:30 AM UTC)
+
+concurrency:
+  group: video-editing-kaggle-orchestration
+  cancel-in-progress: false
 
 jobs:
-  update-counter:
+  prepare-submission:
     runs-on: ubuntu-latest
     outputs:
-      video_number: ${{ steps.increment.outputs.video_number }}
+      should_submit: ${{ steps.allocate.outputs.should_submit }}
+      account_number: ${{ steps.allocate.outputs.account_number }}
+      video_number: ${{ steps.allocate.outputs.video_number }}
     steps:
       # Checkout repository
       - name: Checkout Code
@@ -19,10 +25,14 @@ jobs:
           repository: ViralPetsTV/viral.pets.tv
           token: ${{ secrets.PRIVATE_REPO_TOKEN }}
           sparse-checkout: |
-            counter_video_editing.py
             counter_video_editing.txt
             video_end_tracker.txt
+            KAGGLE/
           fetch-depth: 1
+
+      - name: Pull Latest Changes
+        run: |
+          git pull origin main
 
       # Set up Python for counter scripts
       - name: Set up Python
@@ -30,27 +40,28 @@ jobs:
         with:
           python-version: '3.12.9'
 
-      # Increment video editing counter
-      - name: Increment Counter
-        id: increment
+      - name: Ensure Pending State
         run: |
-          python3 counter_video_editing.py
-          VIDEO_NUMBER=$(cat counter_video_editing.txt)
-          echo "video_number=$VIDEO_NUMBER" >> $GITHUB_OUTPUT
-          echo "Updated video editing counter to: $VIDEO_NUMBER"
+          python3 KAGGLE/kaggle_pending_manager.py ensure
 
-      # Commit updated counter file
-      - name: Commit Counter Update
+      - name: Reserve Account and Candidate Video
+        id: allocate
+        run: |
+          python3 KAGGLE/kaggle_pending_manager.py allocate
+
+      - name: Commit Reservation
+        if: steps.allocate.outputs.should_submit == 'true'
         run: |
           git config --local user.name "github-actions"
           git config --local user.email "github-actions@github.com"
-          git add counter_video_editing.txt
-          git commit -m "Update video editing counter" || echo "No changes to commit"
-          git pull --rebase origin main || echo "No changes to pull"
-          git push || echo "No changes to push"
+          git add KAGGLE/kaggle_pending_runs.json
+          git commit -m "Reserve Kaggle account ${{ steps.allocate.outputs.account_number }} for Video_${{ steps.allocate.outputs.video_number }}" || echo "No changes to commit"
+          git pull --rebase origin main
+          git push
 
   run-on-kaggle:
-    needs: update-counter
+    needs: prepare-submission
+    if: needs.prepare-submission.outputs.should_submit == 'true'
     runs-on: ubuntu-latest
     steps:
       # Checkout repository
@@ -65,7 +76,8 @@ jobs:
             counter_video_editing.txt
             video_end_tracker.txt
             requirements.txt
-            kaggle_account_tracker.txt
+            KAGGLE/
+            REELS
           fetch-depth: 1
 
       # Pull latest changes (includes updated counter)
@@ -73,21 +85,21 @@ jobs:
         run: |
           git pull origin main
 
-      # Read current Kaggle account number
-      - name: Read Kaggle Account Number
-        id: read_kaggle_account
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.12.9'
+
+      - name: Ensure Pending State
         run: |
-          ACCOUNT_NUM=$(cat kaggle_account_tracker.txt)
-          echo "account_number=$ACCOUNT_NUM" >> $GITHUB_OUTPUT
-          echo "📌 Current Kaggle account number: $ACCOUNT_NUM"
+          python3 KAGGLE/kaggle_pending_manager.py ensure
 
       # Set Kaggle credentials based on account number
       - name: Set Kaggle Credentials
         id: set_kaggle_creds
         run: |
-          ACCOUNT_NUM=${{ steps.read_kaggle_account.outputs.account_number }}
-          
-          # Dynamically get the username and key from secrets based on account number
+          ACCOUNT_NUM=${{ needs.prepare-submission.outputs.account_number }}
+
           case $ACCOUNT_NUM in
             1)
               KAGGLE_USERNAME="${{ secrets.KAGGLE_USERNAME_1 }}"
@@ -106,19 +118,23 @@ jobs:
               exit 1
               ;;
           esac
-          
+
           echo "kaggle_username=$KAGGLE_USERNAME" >> $GITHUB_OUTPUT
           echo "kaggle_key=$KAGGLE_KEY" >> $GITHUB_OUTPUT
-          echo "✅ Using Kaggle credentials for account $ACCOUNT_NUM"
-          echo "📝 Kaggle Username: $KAGGLE_USERNAME"
+          echo "Using Kaggle credentials for account $ACCOUNT_NUM"
 
-      # Configure Sparse Checkout for specific video
+      - name: Stage Counter for Submission
+        run: |
+          VIDEO_NUMBER="${{ needs.prepare-submission.outputs.video_number }}"
+          echo "$VIDEO_NUMBER" > counter_video_editing.txt
+          echo "Prepared counter file for Video_${VIDEO_NUMBER}"
+
       - name: Configure Sparse Checkout
         run: |
-          VIDEO_NUMBER="${{ needs.update-counter.outputs.video_number }}"
+          VIDEO_NUMBER="${{ needs.prepare-submission.outputs.video_number }}"
           echo "Processing Video_${VIDEO_NUMBER}.mp4"
           echo "VIDEOS/Video_${VIDEO_NUMBER}.mp4" >> .git/info/sparse-checkout
-          echo "REELS/test.mp4" >> .git/info/sparse-checkout
+          echo "REELS" >> .git/info/sparse-checkout
           git sparse-checkout reapply
 
       # Install Kaggle API
@@ -133,8 +149,6 @@ jobs:
           KAGGLE_KEY="${{ steps.set_kaggle_creds.outputs.kaggle_key }}"
           echo "{\"username\":\"$KAGGLE_USERNAME\",\"key\":\"$KAGGLE_KEY\"}" > ~/.kaggle/kaggle.json
           chmod 600 ~/.kaggle/kaggle.json
-          echo "🔧 Configured Kaggle credentials"
-          echo "📝 Kaggle Username: $KAGGLE_USERNAME"
 
       # Prepare Dataset Folder
       - name: Prepare Dataset Folder
@@ -146,11 +160,10 @@ jobs:
           cp video_end_tracker.txt kaggle-dataset/ || true
           cp requirements.txt kaggle-dataset/ || true
           cp IPNBY/quality.ipynb kaggle-dataset/
-          
-          # Include the sparse-checked video file
-          VIDEO_NUMBER="${{ needs.update-counter.outputs.video_number }}"
+
+          VIDEO_NUMBER="${{ needs.prepare-submission.outputs.video_number }}"
           mkdir -p kaggle-dataset/VIDEOS
-          cp "VIDEOS/Video_${VIDEO_NUMBER}.mp4" kaggle-dataset/VIDEOS/ || echo "⚠️ Video file not found: VIDEOS/Video_${VIDEO_NUMBER}.mp4"
+          cp "VIDEOS/Video_${VIDEO_NUMBER}.mp4" kaggle-dataset/VIDEOS/ || echo "Video file not found: VIDEOS/Video_${VIDEO_NUMBER}.mp4"
 
           # Kaggle dataset metadata
           KAGGLE_USERNAME="${{ steps.set_kaggle_creds.outputs.kaggle_username }}"
@@ -183,7 +196,7 @@ jobs:
                 break
               fi
             fi
-            
+
             if [ $i -lt 5 ]; then
               echo "⚠️ Command failed. Retrying in 30 seconds..."
               sleep 30
@@ -228,6 +241,19 @@ jobs:
       - name: Push Notebook to Kaggle
         run: |
           kaggle kernels push -p . --accelerator NvidiaTeslaT4
-          echo "✅ Notebook pushed to Kaggle successfully"
-          echo "📌 Kaggle will process this in the background"
-          echo "🕒 Part 2 workflow will download outputs in ~10 hours"
+          echo "Notebook pushed to Kaggle successfully"
+
+      - name: Finalize Submission State
+        run: |
+          ACCOUNT_NUM="${{ needs.prepare-submission.outputs.account_number }}"
+          VIDEO_NUMBER="${{ needs.prepare-submission.outputs.video_number }}"
+          ACCOUNT_NUM="$ACCOUNT_NUM" VIDEO_NUMBER="$VIDEO_NUMBER" python3 KAGGLE/kaggle_pending_manager.py finalize
+
+      - name: Commit Submission State
+        run: |
+          git config --local user.name "github-actions"
+          git config --local user.email "github-actions@github.com"
+          git add counter_video_editing.txt KAGGLE/kaggle_account_tracker.txt KAGGLE/kaggle_pending_runs.json
+          git commit -m "Queue Video_${{ needs.prepare-submission.outputs.video_number }} on Kaggle account ${{ needs.prepare-submission.outputs.account_number }}" || echo "No changes to commit"
+          git pull --rebase origin main
+          git push
